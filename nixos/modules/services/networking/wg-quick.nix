@@ -11,6 +11,16 @@ let
   interfaceOpts = { ... }: {
     options = {
 
+      type = mkOption {
+        example = "amneziawg";
+        default = "wireguard";
+        type = types.enum ["wireguard" "amneziawg"];
+        description = ''
+          The type of the interface. AmneziaWG is a censor-resistant fork of WireGuard.
+          You should reboot system to make amneziawg kernel module load if you use it.
+        '';
+      };
+
       configFile = mkOption {
         example = "/secret/wg0.conf";
         default = null;
@@ -227,7 +237,7 @@ let
 
   writeScriptFile = name: text: ((pkgs.writeShellScriptBin name text) + "/bin/${name}");
 
-  generatePrivateKeyScript = privateKeyFile: ''
+  generatePrivateKeyScript = privateKeyFile: wgBin: ''
     set -e
 
     # If the parent dir does not already exist, create it.
@@ -236,7 +246,7 @@ let
 
     if [ ! -f "${privateKeyFile}" ]; then
       # Write private key file with atomically-correct permissions.
-      (set -e; umask 077; wg genkey > "${privateKeyFile}")
+      (set -e; umask 077; ${wgBin} genkey > "${privateKeyFile}")
     fi
   '';
 
@@ -244,12 +254,16 @@ let
     assert assertMsg (values.configFile != null || ((values.privateKey != null) != (values.privateKeyFile != null))) "Only one of privateKey, configFile or privateKeyFile may be set";
     assert assertMsg (values.generatePrivateKeyFile == false || values.privateKeyFile != null) "generatePrivateKeyFile requires privateKeyFile to be set";
     let
-      generateKeyScriptFile = if values.generatePrivateKeyFile then writeScriptFile "generatePrivateKey.sh" (generatePrivateKeyScript values.privateKeyFile) else null;
+      wgBin = {
+        wireguard = "wg";
+        amneziawg = "awg";
+      }.${values.type};
+      generateKeyScriptFile = if values.generatePrivateKeyFile then writeScriptFile "generatePrivateKey.sh" (generatePrivateKeyScript values.privateKeyFile wgBin) else null;
       preUpFile = if values.preUp != "" then writeScriptFile "preUp.sh" values.preUp else null;
       postUp =
-            optional (values.privateKeyFile != null) "wg set ${name} private-key <(cat ${values.privateKeyFile})" ++
-            (concatMap (peer: optional (peer.presharedKeyFile != null) "wg set ${name} peer ${peer.publicKey} preshared-key <(cat ${peer.presharedKeyFile})") values.peers) ++
-            optional (values.postUp != "") values.postUp;
+        optional (values.privateKeyFile != null) "${wgBin} set ${name} private-key <(cat ${values.privateKeyFile})" ++
+        (concatMap (peer: optional (peer.presharedKeyFile != null) "${wgBin} set ${name} peer ${peer.publicKey} preshared-key <(cat ${peer.presharedKeyFile})") values.peers) ++
+        optional (values.postUp != "") values.postUp;
       postUpFile = if postUp != [] then writeScriptFile "postUp.sh" (concatMapStringsSep "\n" (line: line) postUp) else null;
       preDownFile = if values.preDown != "" then writeScriptFile "preDown.sh" values.preDown else null;
       postDownFile = if values.postDown != "" then writeScriptFile "postDown.sh" values.postDown else null;
@@ -258,33 +272,33 @@ let
         executable = false;
         destination = "/${name}.conf";
         text =
-        ''
+          ''
         [interface]
-        ${concatMapStringsSep "\n" (address:
-          "Address = ${address}"
-        ) values.address}
-        ${concatMapStringsSep "\n" (dns:
-          "DNS = ${dns}"
-        ) values.dns}
-        '' +
-        optionalString (values.table != null) "Table = ${values.table}\n" +
-        optionalString (values.mtu != null) "MTU = ${toString values.mtu}\n" +
-        optionalString (values.privateKey != null) "PrivateKey = ${values.privateKey}\n" +
-        optionalString (values.listenPort != null) "ListenPort = ${toString values.listenPort}\n" +
-        optionalString (generateKeyScriptFile != null) "PreUp = ${generateKeyScriptFile}\n" +
-        optionalString (preUpFile != null) "PreUp = ${preUpFile}\n" +
-        optionalString (postUpFile != null) "PostUp = ${postUpFile}\n" +
-        optionalString (preDownFile != null) "PreDown = ${preDownFile}\n" +
-        optionalString (postDownFile != null) "PostDown = ${postDownFile}\n" +
-        concatMapStringsSep "\n" (peer:
-          assert assertMsg (!((peer.presharedKeyFile != null) && (peer.presharedKey != null))) "Only one of presharedKey or presharedKeyFile may be set";
-          "[Peer]\n" +
-          "PublicKey = ${peer.publicKey}\n" +
-          optionalString (peer.presharedKey != null) "PresharedKey = ${peer.presharedKey}\n" +
-          optionalString (peer.endpoint != null) "Endpoint = ${peer.endpoint}\n" +
-          optionalString (peer.persistentKeepalive != null) "PersistentKeepalive = ${toString peer.persistentKeepalive}\n" +
-          optionalString (peer.allowedIPs != []) "AllowedIPs = ${concatStringsSep "," peer.allowedIPs}\n"
-        ) values.peers;
+            ${concatMapStringsSep "\n" (address:
+              "Address = ${address}"
+            ) values.address}
+            ${concatMapStringsSep "\n" (dns:
+              "DNS = ${dns}"
+            ) values.dns}
+          '' +
+          optionalString (values.table != null) "Table = ${values.table}\n" +
+          optionalString (values.mtu != null) "MTU = ${toString values.mtu}\n" +
+          optionalString (values.privateKey != null) "PrivateKey = ${values.privateKey}\n" +
+          optionalString (values.listenPort != null) "ListenPort = ${toString values.listenPort}\n" +
+          optionalString (generateKeyScriptFile != null) "PreUp = ${generateKeyScriptFile}\n" +
+          optionalString (preUpFile != null) "PreUp = ${preUpFile}\n" +
+          optionalString (postUpFile != null) "PostUp = ${postUpFile}\n" +
+          optionalString (preDownFile != null) "PreDown = ${preDownFile}\n" +
+          optionalString (postDownFile != null) "PostDown = ${postDownFile}\n" +
+          concatMapStringsSep "\n" (peer:
+            assert assertMsg (!((peer.presharedKeyFile != null) && (peer.presharedKey != null))) "Only one of presharedKey or presharedKeyFile may be set";
+            "[Peer]\n" +
+            "PublicKey = ${peer.publicKey}\n" +
+            optionalString (peer.presharedKey != null) "PresharedKey = ${peer.presharedKey}\n" +
+            optionalString (peer.endpoint != null) "Endpoint = ${peer.endpoint}\n" +
+            optionalString (peer.persistentKeepalive != null) "PersistentKeepalive = ${toString peer.persistentKeepalive}\n" +
+            optionalString (peer.allowedIPs != []) "AllowedIPs = ${concatStringsSep "," peer.allowedIPs}\n"
+          ) values.peers;
       };
       configPath =
         if values.configFile != null then
@@ -293,41 +307,44 @@ let
         else
           "${configDir}/${name}.conf";
     in
-    nameValuePair "wg-quick-${name}"
-      {
-        description = "wg-quick WireGuard Tunnel - ${name}";
-        requires = [ "network-online.target" ];
-        after = [ "network.target" "network-online.target" ];
-        wantedBy = optional values.autostart "multi-user.target";
-        environment.DEVICE = name;
-        path = [
-          pkgs.wireguard-tools
-          config.networking.firewall.package   # iptables or nftables
-          config.networking.resolvconf.package # openresolv or systemd
-        ];
+      nameValuePair "wg-quick-${name}"
+    {
+      description = "${wgBin}-quick WireGuard Tunnel - ${name}";
+      requires = [ "network-online.target" ];
+      after = [ "network.target" "network-online.target" ];
+      wantedBy = optional values.autostart "multi-user.target";
+      environment.DEVICE = name;
+      path = [
+        {
+          wireguard = pkgs.wireguard-tools;
+          amneziawg = pkgs.amneziawg-tools;
+        }.${values.type}
+        config.networking.firewall.package   # iptables or nftables
+        config.networking.resolvconf.package # openresolv or systemd
+      ];
 
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-
-        script = ''
-          ${optionalString (!config.boot.isContainer) "${pkgs.kmod}/bin/modprobe wireguard"}
-          ${optionalString (values.configFile != null) ''
-            cp ${values.configFile} ${configPath}
-          ''}
-          wg-quick up ${configPath}
-        '';
-
-        serviceConfig = {
-          # Used to privately store renamed copies of external config files during activation
-          PrivateTmp = true;
-        };
-
-        preStop = ''
-          wg-quick down ${configPath}
-        '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
       };
+
+      script = ''
+        ${optionalString (!config.boot.isContainer) "${pkgs.kmod}/bin/modprobe ${values.type}"}
+        ${optionalString (values.configFile != null) ''
+            cp ${values.configFile} ${configPath}
+        ''}
+        ${wgBin}-quick up ${configPath}
+      '';
+
+      serviceConfig = {
+        # Used to privately store renamed copies of external config files during activation
+        PrivateTmp = true;
+      };
+
+      preStop = ''
+        ${wgBin}-quick down ${configPath}
+      '';
+    };
 in {
 
   ###### interface
@@ -357,8 +374,15 @@ in {
   ###### implementation
 
   config = mkIf (cfg.interfaces != {}) {
-    boot.extraModulePackages = optional (versionOlder kernel.kernel.version "5.6") kernel.wireguard;
-    environment.systemPackages = [ pkgs.wireguard-tools ];
+    boot.extraModulePackages =
+      optional (
+        any (x: x.type == "wireguard") (attrValues cfg.interfaces)
+        && (versionOlder kernel.kernel.version "5.6")
+      ) kernel.wireguard
+      ++ optional (any (x: x.type == "amneziawg") (attrValues cfg.interfaces)) kernel.amneziawg;
+    environment.systemPackages =
+      optional (any (x: x.type == "wireguard") (attrValues cfg.interfaces)) pkgs.wireguard-tools
+      ++ optional (any (x: x.type == "amneziawg") (attrValues cfg.interfaces)) pkgs.amneziawg-tools;
     systemd.services = mapAttrs' generateUnit cfg.interfaces;
 
     # Prevent networkd from clearing the rules set by wg-quick when restarted (e.g. when waking up from suspend).
